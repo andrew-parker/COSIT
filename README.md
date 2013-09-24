@@ -1,4 +1,4 @@
 COSIT
 =====
 
-CUDA optimised statistical inference techniques: the Jackknife and Blocked Bootstrap
+CUDA Optimised Statistical Inference Techniques: the Jackknife and Blocked Bootstrap
