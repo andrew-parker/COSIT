@@ -28,18 +28,19 @@
 #include <omp.h>
 
 #define TBS 256 //this is the threads per block for the jackknife reduction kernel
-#define ELS 1048576 //number of elements
+#define ELS 10240000 //number of elements
 #define NTHREADS 13 //only valid for Open MP Jackknife, dependent on the system number of cores available
 #define EPB 128 //elements per bin in bootstrap
 #define ELPB 128 //threads per block (elements per bootstrap) in bootstrap
-#define BOOTS 4096 //number of bootstraps
+#define BOOTS 16384 //number of bootstraps
 // see main() below for what happens when each of the following is 0/1
-#define CPU_JACK 1
+#define CPU_JACK 0
 #define OMP_JACK 0
 #define GPU_JACK 0
-#define CPU_BOOT 0
+#define CPU_BOOT 1
 #define LOOP_BOOT 0 //loop_boot=1 and gpu_boot=1 causes us to loop over different bin sizes
-#define GPU_BOOT 0
+#define GPU_BOOT 1
+#define BSTRAP 1 //this is which bootstrap method we run, 1 is the quickest but has some bias, 3 is slowest and has no bias, 2 is between 1 and 3.
 
 
 
@@ -458,7 +459,7 @@ __global__ void reduction2(float *g_odata, float *g_idata)
 
 
 // ************************************* Bootstrap Kernel ************************************** //
-__constant__ int bins;
+//__constant__ int bins;
 // most bias, but quickest (rand in (0,bins-blockDim.x))
 __global__ void bootstrap(float *g_odata, float *g_idata, unsigned int *g_irand)
 {
@@ -542,8 +543,10 @@ float cpu_mean=0.0f, cpu_sd=0.0f,mean_data=0.0f;
 
 //rand array contains a list of discrete random numbers between 0 and binsize-1
     for (int i = 0; i<num_bins*num_boots;i++) {
-	rand_array[i]= (num_bins*rand())/ RAND_MAX;
+	rand_array[i]= num_bins*(rand()/(float) RAND_MAX);
     }
+
+//    for (int i=0; i<256;i++) printf("rand_array[%d]=%d",i,rand_array[i]);
 
     timeSinceLastTimer = elapsed_time(&cpu_timer);
     printf("CPU Time to create random array:\t%f \n",timeSinceLastTimer);
@@ -732,7 +735,7 @@ elapsed_time(&gpu_timer);
 //Fischer shuffle algorithm to replace our bins randomly
 //sample without replacement once for indexes to replace
 	for(int i=0;i<num_bins-1;i++){
-		int Rand=(((num_bins-i)*rand())/RAND_MAX );
+		int Rand=(((num_bins-i)*rand())/(float) RAND_MAX );
 		int temp=exclusive_random[num_bins-i-1];
 		exclusive_random[num_bins-i-1]=exclusive_random[Rand];
 		exclusive_random[Rand]=temp;
@@ -753,12 +756,13 @@ elapsed_time(&gpu_timer);
 	  // create array of random numbers: we need num_subboots*num_bins random numbers
 	  
  	  curandGenerator_t gen;
-		//cudaSafeCall(cudaMalloc((void**)&d_irand,  (num_bins)*(num_subboots) * sizeof(float)));
-	  cudaSafeCall(cudaMalloc((void**)&d_irand,  (num_bins)*(num_subboots) * sizeof(unsigned int)));
+if (BSTRAP==3) cudaSafeCall(cudaMalloc((void**)&d_irand,  (num_bins)*(num_boots) * sizeof(unsigned int)));
+else  cudaSafeCall(cudaMalloc((void**)&d_irand,  (num_bins)*(num_subboots) * sizeof(unsigned int)));
+
 	  curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
 	  curandSetPseudoRandomGeneratorSeed(gen, 1234ULL);
-	    //curandGenerateUniform(gen, d_irand, (num_bins)*(num_subboots));
-      curandGenerate(gen, d_irand, (num_bins)*(num_subboots));
+if (BSTRAP==3) 	curandGenerate(gen, d_irand, (num_bins)*(num_boots));
+else curandGenerate(gen, d_irand, (num_bins)*(num_subboots));
 	  cudaSafeCall( cudaDeviceSynchronize() );
 
 	  timeSinceLastTimer = elapsed_time(&gpu_timer);
@@ -773,9 +777,9 @@ elapsed_time(&gpu_timer);
 	  cudaSafeCall(cudaMemcpy(d_odata2, bin_array, sizeof(float)*num_bins, cudaMemcpyHostToDevice));
 
 	cudaSafeCall( cudaDeviceSynchronize() );
-	bootstrap<<<num_blocks,num_threadsperblock>>>(d_idata2, d_odata2, d_irand);
-	//bootstrap2<<num_blocks,num_threadsperblock>>(d_idata2,d_odata2,d_irand);
-	//bootstrap3<<num_blocks,num_threadsperblock>>(d_idata2,d_odata2,d_irand);
+if (BSTRAP==1) bootstrap<<<num_blocks,num_threadsperblock>>>(d_idata2,d_odata2,d_irand);
+if (BSTRAP==2) bootstrap2<<<num_blocks,num_threadsperblock>>>(d_idata2,d_odata2,d_irand);
+if (BSTRAP==3) bootstrap3<<<num_blocks,num_threadsperblock>>>(d_idata2,d_odata2,d_irand);
 	cudaCheckMsg("bootstrap kernel execution failed");
 	cudaSafeCall( cudaDeviceSynchronize() );
 	gpu_calcs = elapsed_time(&gpu_timer);
@@ -829,7 +833,7 @@ elapsed_time(&gpu_timer);
 
 }
 
-// ********************* main() ****************** //
+// *********************** main() ****************** //
 
 int main( int argc, char** argv)
 {
@@ -858,6 +862,14 @@ int main( int argc, char** argv)
     h_data[i] = floorf(1000*(rand()/(float)RAND_MAX));
 //    h_data[i] = 1.0f;
   }
+
+// create an array of correlated random numbers
+//  for(int i = 0; i < num_elements/128;i++) {
+//  for (int j = 0; j<128;j++) 
+//  h_data[i*128+j]=floorf(100*((i%2)-(rand())/(float)RAND_MAX)); //each bin, i, of length 128 contains random numbers between -100 and 0 or between 0 and 100
+//  }
+
+for (int i = 0 ; i < 512; i++) if(i%1==0) printf("h_data[%d]=%f\n",i,h_data[i]);
 
   data_time = elapsed_time(&timer);
   printf("Time to create data array:\t%f \n",data_time);
